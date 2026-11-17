@@ -402,6 +402,22 @@ html, body {
           
           <div class="space-y-2">
             <label class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Исходное фото</label>
+            <button id="btnCam" class="w-full bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] hover:border-[#3f3f46] rounded-xl p-3 text-xs font-medium text-zinc-200 transition-all flex items-center justify-center gap-2">
+              <i class="fa-solid fa-camera text-zinc-400"></i><span id="btnCamLabel">Камера — портрет онлайн</span>
+            </button>
+            <div id="camPanel" class="hidden space-y-2">
+              <div class="grid grid-cols-2 gap-2">
+                <button id="camFlip" class="bg-[#121215] hover:bg-[#18181b] border border-[#27272a] rounded-xl p-2.5 text-xs text-zinc-300 flex items-center justify-center gap-2"><i class="fa-solid fa-camera-rotate"></i><span>Сменить камеру</span></button>
+                <button id="camFreeze" class="bg-[#121215] hover:bg-[#18181b] border border-[#27272a] rounded-xl p-2.5 text-xs text-zinc-300 flex items-center justify-center gap-2"><i class="fa-solid fa-pause"></i><span>Пауза</span></button>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <select id="camAspect" title="Пропорции кадра" class="bg-[#18181b] border border-[#27272a] text-zinc-200 text-xs rounded-xl px-3 py-2.5 outline-none cursor-pointer">
+                  <option value="1">Квадрат 1:1</option><option value="0.8">Портрет 4:5</option><option value="1.3333">Альбом 4:3</option><option value="auto">Как камера</option>
+                </select>
+                <label class="flex items-center justify-center gap-2 text-xs text-zinc-300 bg-[#18181b] border border-[#27272a] rounded-xl cursor-pointer"><input type="checkbox" id="camMirror" checked><span>Зеркало</span></label>
+              </div>
+              <button id="camStop" class="w-full bg-[#121215] hover:bg-[#18181b] border border-[#27272a] rounded-xl p-2.5 text-xs text-zinc-300">Выключить камеру, оставить кадр</button>
+            </div>
             <div class="grid grid-cols-2 gap-2">
               <label class="cursor-pointer bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] hover:border-[#3f3f46] rounded-xl p-3 text-center transition-all flex items-center justify-center gap-2 group">
                 <i class="fa-solid fa-upload text-zinc-400 group-hover:text-white transition-colors"></i>
@@ -659,6 +675,7 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
     const state = {
       imageLoaded: false,
       imgElement: null,
+      live: false, liveVideo: null, liveMirror: true,
       aspectRatio: 1.0,
       width: 1080,
       height: 1080,
@@ -772,7 +789,7 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
     }
 
     const sampleCanvas = document.createElement('canvas');
-    const sampleCtx = sampleCanvas.getContext('2d');
+    const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
     function initDefaultSequence() {
       state.yearsSequence = ['B', '&', 'D'];
@@ -954,6 +971,7 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
     $('imageInput').addEventListener('change', function(e) {
       const file = e.target.files[0];
       if(!file) return;
+      Cam.stop(false);
       const img = new Image();
       img.onload = function() {
         state.imgElement = img;
@@ -990,6 +1008,7 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
     });
 
     $('btnResetImage').addEventListener('click', () => {
+      Cam.stop(false);
       state.imageLoaded = false;
       state.imgElement = null;
       state.aspectRatio = 1.0;
@@ -1008,19 +1027,142 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
       render();
     });
 
+    // --- КАМЕРА: портрет строится из видео онлайн ---
+    const Cam = (() => {
+      let stream = null, facing = 'user', paused = false, on = false;
+      const info = (a, b) => { $('imageInfo').innerHTML = `<span>${a}</span><span>${b || ''}</span>`; };
+      function setSize() {
+        const v = state.liveVideo, sel = $('camAspect').value;
+        const ar = sel === 'auto' ? v.videoWidth / v.videoHeight : parseFloat(sel);
+        const maxDim = 1080;
+        state.aspectRatio = ar;
+        if(ar >= 1) { state.width = maxDim; state.height = Math.round(maxDim / ar); }
+        else { state.height = maxDim; state.width = Math.round(maxDim * ar); }
+        canvas.width = state.width; canvas.height = state.height;
+        applyQuality();
+      }
+      function ui(on) {
+        $('camPanel').classList.toggle('hidden', !on);
+        $('btnCamLabel').innerText = on ? 'Камера включена' : 'Камера — портрет онлайн';
+      }
+      async function open() {
+        if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { info('Камера недоступна', 'нужен https или localhost'); return false; }
+        if(stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 960 }, height: { ideal: 960 } } });
+        } catch(e) {
+          info('Нет доступа к камере', e && e.name === 'NotAllowedError' ? 'разрешите доступ в браузере' : (e && e.name) || '');
+          return false;
+        }
+        let v = state.liveVideo;
+        if(!v) { v = document.createElement('video'); v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); state.liveVideo = v; }
+        v.srcObject = stream;
+        try { await v.play(); } catch(e) {}
+        if(!v.videoWidth) await new Promise(r => { v.onloadedmetadata = r; setTimeout(r, 3000); });
+        if(!v.videoWidth) { info('Камера не отдала видео', ''); return false; }
+        stream.getVideoTracks()[0].addEventListener('ended', () => stop(true));
+        return true;
+      }
+      async function start() {
+        if(on) { stop(true); return; }
+        $('btnCam').disabled = true;
+        const ok = await open();
+        $('btnCam').disabled = false;
+        if(!ok) return;
+        paused = false; on = true; state.livePaused = false;
+        state.liveMirror = facing === 'user'; $('camMirror').checked = state.liveMirror;
+        state.imgElement = state.liveVideo; state.imageLoaded = true; state.live = true;
+        setSize();
+        info('Камера онлайн', `${state.liveVideo.videoWidth}x${state.liveVideo.videoHeight}`);
+        $('statStatus').innerText = 'Камера онлайн';
+        ui(true);
+        $('camFreeze').querySelector('span').innerText = 'Пауза';
+        $('camFreeze').querySelector('i').className = 'fa-solid fa-pause';
+        if(window.innerWidth < 1024) setMobileView('canvas');
+        wakeIdle(); prewarmMasks();
+      }
+      // keep=true: оставить последний кадр как обычное фото
+      function stop(keep) {
+        if(!on) return;
+        on = false; paused = false; state.livePaused = false;
+        if(keep && state.liveVideo.videoWidth) {
+          const c = document.createElement('canvas'); c.width = state.width; c.height = state.height;
+          drawLiveFrame(c.getContext('2d'), c.width, c.height);
+          state.imgElement = c; state.liveMirror = false;
+        }
+        state.live = false;
+        if(stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+        if(state.liveVideo) state.liveVideo.srcObject = null;
+        ui(false);
+        info(keep ? 'Кадр с камеры' : 'Режим: B & D Паттерн', `${state.width}x${state.height}`);
+        if(keep) $('statStatus').innerText = 'Портрет из кадра';
+        wakeIdle(); render();
+      }
+      function freeze() {
+        if(!on) return;
+        paused = !paused;
+        const v = state.liveVideo;
+        state.livePaused = paused;
+        if(paused) v.pause(); else v.play().catch(() => {});   // на паузе кадр остаётся в видео, цикл перерисовки засыпает
+        $('camFreeze').querySelector('span').innerText = paused ? 'Продолжить' : 'Пауза';
+        $('camFreeze').querySelector('i').className = 'fa-solid ' + (paused ? 'fa-play' : 'fa-pause');
+        wakeIdle(); render();
+      }
+      $('btnCam').addEventListener('click', () => { if(on) stop(true); else start(); });
+      $('camStop').addEventListener('click', () => stop(true));
+      $('camFreeze').addEventListener('click', freeze);
+      $('camFlip').addEventListener('click', async () => {
+        if(!stream) return;
+        facing = facing === 'user' ? 'environment' : 'user';
+        const ok = await open();
+        if(ok) { state.liveMirror = facing === 'user'; $('camMirror').checked = state.liveMirror; setSize(); }
+      });
+      $('camMirror').addEventListener('change', e => { state.liveMirror = e.target.checked; render(); });
+      $('camAspect').addEventListener('change', () => { if(state.liveVideo && state.liveVideo.videoWidth) { setSize(); render(); } });
+      // вкладка скрыта — камеру не держим включённой, на возврате включаем снова
+      document.addEventListener('visibilitychange', () => {
+        const v = state.liveVideo;
+        if(!v || !stream) return;
+        if(document.hidden) v.pause(); else if(!paused) v.play().catch(() => {});
+      });
+      return { stop };
+    })();
+
     // --- PORTRAIT GRID & SAMPLING LOGIC ---
+    const LIVE_K = 0.5, LIVE_W = new Map();
+    if(document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => LIVE_W.clear());
+    // Кадр с камеры: обрезка «cover» под пропорции холста + зеркало для фронтальной камеры
+    function drawLiveFrame(c, w, h) {
+      const v = state.liveVideo, vw = v.videoWidth, vh = v.videoHeight, ar = w / h;
+      let sx = 0, sy = 0, sw = vw, sh = vh;
+      if(vw / vh > ar) { sw = vh * ar; sx = (vw - sw) / 2; } else { sh = vw / ar; sy = (vh - sh) / 2; }
+      c.save();
+      if(state.liveMirror) { c.translate(w, 0); c.scale(-1, 1); }
+      c.drawImage(v, sx, sy, sw, sh, 0, 0, w, h);
+      c.restore();
+    }
     function buildGridPoints() {
       const points = [];
       const medFont = state.customMediumFont ? state.mediumFontFamily : 'TT-Drugs-Medium, CustomLocalFont, sans-serif';
       const boldFont = state.customBoldFont ? state.boldFontFamily : 'TT-Drugs-Bold, CustomLocalFont, sans-serif';
       
       if(state.imageLoaded && state.imgElement) {
-        sampleCtx.clearRect(0, 0, state.width, state.height);
-        sampleCtx.filter = `brightness(${state.brightness}) contrast(${state.contrast})`;
-        sampleCtx.drawImage(state.imgElement, 0, 0, state.width, state.height);
-        sampleCtx.filter = 'none';
+        const live = state.live && state.liveVideo;
+        // Живое видео сэмплируем в уменьшенном разрешении: быстрее и сглаживает шум камеры
+        const k = live ? LIVE_K : 1;
+        const sw = Math.max(1, Math.round(state.width * k)), sh = Math.max(1, Math.round(state.height * k));
+        if(sampleCanvas.width !== sw || sampleCanvas.height !== sh) { sampleCanvas.width = sw; sampleCanvas.height = sh; }
+        if(live) {
+          if(state.liveVideo.readyState >= 2 && state.liveVideo.videoWidth) { sampleCtx.clearRect(0, 0, sw, sh); drawLiveFrame(sampleCtx, sw, sh); }
+        } else {
+          sampleCtx.clearRect(0, 0, sw, sh);
+          sampleCtx.filter = `brightness(${state.brightness}) contrast(${state.contrast})`;
+          sampleCtx.drawImage(state.imgElement, 0, 0, sw, sh);
+          sampleCtx.filter = 'none';
+        }
 
-        const imgData = sampleCtx.getImageData(0, 0, state.width, state.height).data;
+        const imgData = sampleCtx.getImageData(0, 0, sw, sh).data;
+        const pm = medFont + '|', pb = boldFont + '|';
 
         let seqIdx = 0;
         let y = state.rowGap;
@@ -1031,14 +1173,19 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
             const sym = state.yearsSequence[seqIdx % state.yearsSequence.length];
             seqIdx++;
 
-            const pxX = Math.min(Math.floor(x), state.width - 1);
-            const pxY = Math.min(Math.floor(y), state.height - 1);
-            const idx = (pxY * state.width + pxX) * 4;
+            const pxX = Math.min(Math.floor(x * k), sw - 1);
+            const pxY = Math.min(Math.floor(y * k), sh - 1);
+            const idx = (pxY * sw + pxX) * 4;
 
             let r = imgData[idx];
             let g = imgData[idx+1];
             let b = imgData[idx+2];
             let lum = 0.299*r + 0.587*g + 0.114*b;
+            if(live) {   // яркость/контраст вручную (ctx.filter не везде поддерживается и медленный)
+              let v = lum / 255 * state.brightness;
+              v = (v - 0.5) * state.contrast + 0.5;
+              lum = v < 0 ? 0 : v > 1 ? 255 : v * 255;
+            }
 
             if(state.posterize) {
               const step = 255 / (state.posterizeLevels - 1);
@@ -1059,8 +1206,19 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
               isWhite
             });
 
-            ctx.font = `${isBold ? '700' : '400'} ${fontSize}px ${isBold ? boldFont : medFont}`;
-            const textWidth = ctx.measureText(sym).width;
+            let textWidth;
+            if(live) {   // ширину символа кэшируем: measureText на каждый символ каждый кадр слишком дорог
+              const wk = (isBold ? pb : pm) + sym;
+              let u = LIVE_W.get(wk);
+              if(u === undefined) {
+                ctx.font = `${isBold ? '700' : '400'} 100px ${isBold ? boldFont : medFont}`;
+                u = ctx.measureText(sym).width / 100; LIVE_W.set(wk, u);
+              }
+              textWidth = u * fontSize;
+            } else {
+              ctx.font = `${isBold ? '700' : '400'} ${fontSize}px ${isBold ? boldFont : medFont}`;
+              textWidth = ctx.measureText(sym).width;
+            }
             x += textWidth + state.horizontalGap;
           }
           y += state.rowGap;
@@ -2693,7 +2851,7 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
 
     function idleKind() {
       const shimmer = !state.imageLoaded && state.idleMode !== 'off';
-      if(shimmer || state.bgMode === 'gradient') return 'live';
+      if(shimmer || (state.live && !state.livePaused) || state.bgMode === 'gradient') return 'live';
       return state.bgMode === 'bw-blobs' ? 'slow' : 'static';
     }
     function idleLoop(timestamp) {
@@ -2701,12 +2859,12 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
       if(document.hidden) { scheduleIdle(1000); return; }
       const kind = idleKind();
       if(kind === 'live') {
-        const interval = state.lite ? 42 : 0;
+        const interval = (state.live && !state.livePaused) ? (state.lite || IS_IOS ? 50 : 33) : state.lite ? 42 : 0;   // камера: 20–30 кадров/с
         if(timestamp - lastIdleDraw >= interval && frameGate('idle', timestamp)) {
           lastIdleDraw = timestamp;
           render(timestamp);
           // Автоматическая проверка: если первые секунды идёт медленнее ~28 кадров/с — включаем лёгкий режим
-          if(!perfChecked && !state.lite) {
+          if(!perfChecked && !state.lite && !(state.live && !state.livePaused)) {
             if(timestamp > 1500) {
               if(!perfStart) perfStart = timestamp;
               perfFrames++;
