@@ -1125,7 +1125,14 @@ const MASK_HEART_PATHS=["M694.62,326.67c-34.16-7.38-71.1-1-100.4,18.07-15,9.53-2
         if(!v || !stream) return;
         if(document.hidden) v.pause(); else if(!paused) v.play().catch(() => {});
       });
-      return { stop };
+      // Камера по умолчанию: включаем при открытии, пока человек сам её не выключил
+      const pref = v => { try { v === undefined ? 0 : localStorage.setItem('camAuto', v ? '1' : '0'); return localStorage.getItem('camAuto'); } catch(e) { return null; } };
+      $('btnCam').addEventListener('click', () => pref(!on), true);   // capture: срабатывает до основного обработчика
+      $('camStop').addEventListener('click', () => pref(false));
+      $('btnResetImage').addEventListener('click', () => pref(false));
+      $('imageInput').addEventListener('change', () => pref(false));
+      if(pref() !== '0') setTimeout(() => { if(!state.imageLoaded) start(); }, 400);
+      return { stop, start };
     })();
 
     // --- PORTRAIT GRID & SAMPLING LOGIC ---
